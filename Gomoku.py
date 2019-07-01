@@ -11,25 +11,27 @@ import random
 from collections import namedtuple
 import matplotlib.pyplot as plt
 from sys import exit
-#random.seed(0)
-#torch.manual_seed(0)
+random.seed(0)
+torch.manual_seed(0)
 
 DEVICE = torch.device('cuda')
 Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
 
 def main():
-    g = Gomoku(visualize=0, saveModel=1, loadModel=1)
-#    g.train()
+    g = Gomoku(visualize=0, saveModel=1, loadModel=0)
+    g.train()
 #    g.display()
-    g.test(chooseBlack=1)
+#    g.test(chooseBlack=1)
 
 class Gomoku:
     def __init__(self, visualize=0, saveModel=0, loadModel=1):
-        self.episodeNum = 100
-        self.batchSize = 1024
+        self.episodeNum = 5000
+        self.trainPerEpisode = 4
+        self.batchSize = 512
+        self.learningRate = 0.001
         self.gamma = 0.999
         self.memorySize = 2000
-        self.thresStart, self.thresEnd, self.thresDecay = 0.5, 0.01, 1000
+        self.thresStart, self.thresEnd, self.thresDecay = 0.9, 0.05, 1000
         
         self.device = DEVICE
         self.blackView, self.whiteView = torch.zeros(15, 15), torch.zeros(15, 15)
@@ -59,7 +61,7 @@ class Gomoku:
         self.net = Net().to(self.device)
         if self.loadModel:
             self.net.load_state_dict(torch.load('gomoku.pt'))
-        self.optimizer = optim.SGD(self.net.parameters(), lr=0.001, momentum=0.9, weight_decay=0.01)
+        self.optimizer = optim.SGD(self.net.parameters(), lr=self.learningRate, momentum=0.9, weight_decay=0.01)
         self.memory = replayMemory(self.memorySize)
         start = time.time()
         losses = []
@@ -67,7 +69,7 @@ class Gomoku:
         for episode in range(self.episodeNum):
             self.moveThres = self.thresEnd + (self.thresStart - self.thresEnd) * math.exp(-episode/self.thresDecay)
             blackView, whiteView = self.playGame()
-            loss = self.optimize(iterate=10)
+            loss = self.optimize(iterate=self.trainPerEpisode)
             if loss is not None:
                 losses.append(loss)
                 lastTen += loss
@@ -76,7 +78,7 @@ class Gomoku:
                 if lastTen != 0:
                     print('10-avg Loss: %.6f' % (lastTen/10))
                 lastTen = 0
-            if self.saveModel and (episode+1) % 100 == 0:
+            if self.saveModel and (episode+1) % 500 == 0:
                 torch.save(self.net.state_dict(), 'gomoku.pt')
         end = time.time()
         print('Time: %.f s' % (end-start))
@@ -241,13 +243,13 @@ class Gomoku:
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(2, 64, 3, 1, 1)
-        self.bn1 = torch.nn.BatchNorm2d(64)
+        self.conv1 = nn.Conv2d(2, 128, 3, 1, 1)
+        self.bn1 = torch.nn.BatchNorm2d(128)
         self.pool = nn.MaxPool2d(3)
-        self.conv2 = nn.Conv2d(64, 64, 3, 1, 1)
-        self.conv3 = nn.Conv2d(64, 16, 1)
-        self.bn2 = torch.nn.BatchNorm2d(16)
-        self.fc1 = nn.Linear(5*5*16, 15**2)
+        self.conv2 = nn.Conv2d(128, 128, 3, 1, 1)
+        self.conv3 = nn.Conv2d(128, 32, 1)
+        self.bn2 = torch.nn.BatchNorm2d(32)
+        self.fc1 = nn.Linear(5*5*32, 15**2)
         
 #        self.conv4 = nn.Conv2d(64, 4, 1)
 #        self.bn3 = torch.nn.BatchNorm2d(4)
@@ -263,8 +265,8 @@ class Net(nn.Module):
         x = F.relu(self.bn1(self.conv2(y)) + x)
         x = self.pool(x)
         x = F.relu(self.bn2(self.conv3(x)))
-        x = x.view(-1, 5*5*16)
-        x = F.relu(self.fc1(x))
+        x = x.view(-1, 5*5*32)
+        x = (torch.tanh(self.fc1(x)) + 1) / 2
 #        value = F.relu(self.bn3(self.conv4(x)))
 #        value = value.view(-1, 5*5*4)
 #        value = F.relu(self.fc2(value))

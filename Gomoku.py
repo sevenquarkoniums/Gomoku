@@ -11,25 +11,27 @@ import random
 from collections import namedtuple
 import matplotlib.pyplot as plt
 from sys import exit
-random.seed(0)
-torch.manual_seed(0)
+#random.seed(0)
+#torch.manual_seed(0)
 
+DEVICE = torch.device('cuda')
 Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
 
 def main():
     g = Gomoku(visualize=0, saveModel=1, loadModel=1)
-    g.train()
+#    g.train()
 #    g.display()
+    g.test(chooseBlack=1)
 
 class Gomoku:
     def __init__(self, visualize=0, saveModel=0, loadModel=1):
-        self.episodeNum = 1000
+        self.episodeNum = 100
         self.batchSize = 1024
         self.gamma = 0.999
         self.memorySize = 2000
         self.thresStart, self.thresEnd, self.thresDecay = 0.5, 0.01, 1000
         
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = DEVICE
         self.blackView, self.whiteView = torch.zeros(15, 15), torch.zeros(15, 15)
         self.saveModel = saveModel
         self.loadModel = loadModel
@@ -40,18 +42,18 @@ class Gomoku:
 #            self.show = multiprocessing.Process(target=self.display)
 #            self.show.start()
 
-    def display(self):
+    def display(self, ai=0, chooseBlack=1):
         pygame.init()
 
-        self.screen = pygame.display.set_mode((800, 600))
-        pygame.display.set_caption("五子棋")
+        self.screen = pygame.display.set_mode((700, 500))
+        pygame.display.set_caption("屁坨1.0")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.Font(r"C:\Windows\Fonts\consola.ttf", 24)
         self.going = True
 
-        self.chessboard = Chessboard()
+        self.chessboard = Chessboard(chooseBlack, self.net)
         self.chessboard.grid = (self.blackView - self.whiteView).tolist()
-        self.loopDisplay()
+        self.loopDisplay(ai=ai, chooseBlack=chooseBlack)
     
     def train(self):
         self.net = Net().to(self.device)
@@ -73,6 +75,7 @@ class Gomoku:
                 print('Episode %d' % (episode+1))
                 if lastTen != 0:
                     print('10-avg Loss: %.6f' % (lastTen/10))
+                lastTen = 0
             if self.saveModel and (episode+1) % 100 == 0:
                 torch.save(self.net.state_dict(), 'gomoku.pt')
         end = time.time()
@@ -167,6 +170,11 @@ class Gomoku:
             self.optimizer.step()
         return loss
 
+    def test(self, chooseBlack=1):
+        self.net = Net().to(self.device)
+        self.net.load_state_dict(torch.load('gomoku.pt'))
+        self.display(ai=1, chooseBlack=chooseBlack)
+
     def checkWin(self, selfView, r, c):
         n_count = self.getContinuousNum(selfView, r, c, -1, 0)
         s_count = self.getContinuousNum(selfView, r, c, 1, 0)
@@ -203,21 +211,21 @@ class Gomoku:
             i += 1
         return result
 
-    def loopDisplay(self):
+    def loopDisplay(self, ai=0, chooseBlack=1):
         while self.going:
-            self.update()
+            self.update(ai=ai, chooseBlack=chooseBlack)
             self.draw()
-            self.clock.tick(24)
+            self.clock.tick(20)
 
         pygame.quit()
         sys.exit(0)
 
-    def update(self):
+    def update(self, ai=0, chooseBlack=1):
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 self.going = False
             elif e.type == pygame.MOUSEBUTTONDOWN:
-                self.chessboard.handle_key_event(e)
+                self.chessboard.handle_key_event(e, ai, chooseBlack)
 
     def draw(self):
         self.screen.fill((255, 255, 255))
@@ -225,7 +233,7 @@ class Gomoku:
 
         self.chessboard.draw(self.screen)
         if self.chessboard.game_over:
-            self.screen.blit(self.font.render("{0} Win".format("Black" if self.chessboard.winner == 'b' else "White"), True, (0, 0, 0)), (500, 10))
+            self.screen.blit(self.font.render("{0} Win".format("Black" if self.chessboard.winner == 1 else "White"), True, (0, 0, 0)), (500, 10))
 
         pygame.display.update()
 
@@ -284,20 +292,21 @@ class replayMemory(object):
 
 class Chessboard:
 
-    def __init__(self):
+    def __init__(self, chooseBlack=1, model=None):
         self.grid_size = 26
         self.start_x, self.start_y = 30, 50
         self.edge_size = self.grid_size / 2
         self.grid_count = 15
-        self.piece = 1
+        self.piece = 1 if chooseBlack else -1
         self.winner = None
         self.game_over = False
+        self.model = model
 
         self.grid = []
         for i in range(self.grid_count): # represents empty slot.
             self.grid.append([0] * self.grid_count)
 
-    def handle_key_event(self, e):
+    def handle_key_event(self, e, ai, chooseBlack):
         origin_x = self.start_x - self.edge_size
         origin_y = self.start_y - self.edge_size
         size = (self.grid_count - 1) * self.grid_size + self.edge_size * 2
@@ -308,18 +317,31 @@ class Chessboard:
                 y = pos[1] - origin_y
                 r = int(y // self.grid_size)
                 c = int(x // self.grid_size)
-                if self.set_piece(r, c):
+                if self.set_piece(r, c):# valid move.
                     self.check_win(r, c)
+                    if ai:
+                        blackView = torch.tensor(self.grid, device=DEVICE)
+                        blackView[blackView!=1] = 0
+                        whiteView = torch.tensor(self.grid, device=DEVICE)
+                        whiteView[whiteView!=-1] = 0
+                        whiteView[whiteView==-1] = 1
+                        state = torch.stack([torch.unsqueeze(blackView, 0), torch.unsqueeze(whiteView, 0)] \
+                                             if self.piece == 1 else [torch.unsqueeze(whiteView, 0),  torch.unsqueeze(blackView, 0)], dim=1)
+                        with torch.no_grad():
+                            values = self.model.forward(state)
+                        values = values.view(-1, 15, 15) * (1 - blackView - whiteView) - (blackView + whiteView)
+                        values = torch.squeeze(values)
+                        index = torch.argmax(values).item()
+                        moveRow, moveCol = index // 15, index % 15
+                        self.grid[moveRow][moveCol] = self.piece 
+                            # cannot handle draw !!
+                        self.check_win(moveRow, moveCol)
+                        self.piece = 1 if self.piece == -1 else -1
 
     def set_piece(self, r, c):
         if self.grid[r][c] == 0:
             self.grid[r][c] = self.piece
-
-            if self.piece == 1:
-                self.piece = -1
-            else:
-                self.piece = 1
-
+            self.piece = 1 if self.piece == -1 else -1
             return True
         return False
 

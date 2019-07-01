@@ -10,24 +10,29 @@ import math
 import random
 from collections import namedtuple
 import matplotlib.pyplot as plt
-#from sys import exit
+from sys import exit
 random.seed(0)
 torch.manual_seed(0)
 
 Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
 
 def main():
-    g = Gomoku(visualize=0)
+    g = Gomoku(visualize=0, saveModel=1, loadModel=1)
     g.train()
 #    g.display()
 
 class Gomoku:
-    def __init__(self, visualize=0):
+    def __init__(self, visualize=0, saveModel=0, loadModel=1):
+        self.episodeNum = 1000
         self.batchSize = 1024
         self.gamma = 0.999
-        self.blackView, self.whiteView = torch.zeros(15, 15), torch.zeros(15, 15)
-        self.thresStart, self.thresEnd, self.thresDecay = 0.99, 0.01, 1000
+        self.memorySize = 2000
+        self.thresStart, self.thresEnd, self.thresDecay = 0.5, 0.01, 1000
+        
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.blackView, self.whiteView = torch.zeros(15, 15), torch.zeros(15, 15)
+        self.saveModel = saveModel
+        self.loadModel = loadModel
 #        if visualize:
 #            self.show = None
 #            if self.show:
@@ -50,25 +55,30 @@ class Gomoku:
     
     def train(self):
         self.net = Net().to(self.device)
+        if self.loadModel:
+            self.net.load_state_dict(torch.load('gomoku.pt'))
         self.optimizer = optim.SGD(self.net.parameters(), lr=0.001, momentum=0.9, weight_decay=0.01)
-        self.memory = replayMemory(20000)
+        self.memory = replayMemory(self.memorySize)
         start = time.time()
         losses = []
-        for episode in range(10000):
+        lastTen = 0
+        for episode in range(self.episodeNum):
             self.moveThres = self.thresEnd + (self.thresStart - self.thresEnd) * math.exp(-episode/self.thresDecay)
             blackView, whiteView = self.playGame()
-            loss = self.optimize(iterate=1)
+            loss = self.optimize(iterate=10)
             if loss is not None:
                 losses.append(loss)
+                lastTen += loss
             if (episode+1) % 10 == 0:
                 print('Episode %d' % (episode+1))
-                if loss is not None:
-                    print('Loss: %.4f' % loss)
+                if lastTen != 0:
+                    print('10-avg Loss: %.6f' % (lastTen/10))
+            if self.saveModel and (episode+1) % 100 == 0:
+                torch.save(self.net.state_dict(), 'gomoku.pt')
         end = time.time()
         print('Time: %.f s' % (end-start))
         self.blackView = blackView.to('cpu')
         self.whiteView = whiteView.to('cpu')
-        torch.save(self.net.state_dict(), 'gomoku.pt')
         
         fig, ax = plt.subplots(figsize=(8,6))
         ax.plot(losses, '-')
@@ -81,8 +91,8 @@ class Gomoku:
         episodeEnd = False
         blackMove = True
         moveCount = 0
-        prevBlackState, prevBlackAction, prevBlackReward = None, None, None
-        prevWhiteState, prevWhiteAction, prevWhiteReward = None, None, None
+        prevBlackState, prevBlackAction = None, None
+        prevWhiteState, prevWhiteAction = None, None
         while not episodeEnd:
             state = torch.stack([torch.unsqueeze(blackView, 0), torch.unsqueeze(whiteView, 0)] \
                                  if blackMove else [torch.unsqueeze(whiteView, 0),  torch.unsqueeze(blackView, 0)], dim=1)
@@ -94,47 +104,68 @@ class Gomoku:
                 values = torch.squeeze(values)
                 index = torch.argmax(values).item()
                 moveRow, moveCol = index // 15, index % 15
-                if blackView[moveRow, moveCol] == 1 or whiteView[moveRow, moveCol] == 1:
-                    print('Conflict!')
             else: # random move.
                 exist = blackView + whiteView
                 possible = (exist==0).nonzero()
                 moveRow, moveCol = possible[torch.randint(0, possible.size(0), (1, 1)).item()]
                 moveRow, moveCol = moveRow.item(), moveCol.item()
             action = torch.tensor([[moveRow * 15 + moveCol]], device=self.device)
-            reward = 0
             if blackMove:
                 blackView[moveRow, moveCol] = 1
-                blackMove = False
                 if self.checkWin(blackView, moveRow, moveCol):
-                    reward = 1
+                    reward = torch.tensor([1], device=self.device, dtype=torch.float)
+                    self.memory.push(state, action, None, reward)
                     episodeEnd = True
+                else:
+                    if prevBlackState is not None:
+                        prevBlackReward = torch.tensor([0], device=self.device, dtype=torch.float)
+                        self.memory.push(prevBlackState, prevBlackAction, state, prevBlackReward)
+                    prevBlackState = state
+                    prevBlackAction = action
             else:
                 whiteView[moveRow, moveCol] = 1
-                blackMove = True
                 if self.checkWin(whiteView, moveRow, moveCol):
-                    reward = 1
+                    reward = torch.tensor([1], device=self.device, dtype=torch.float)
+                    self.memory.push(state, action, None, reward)
                     episodeEnd = True
+                else:
+                    if prevWhiteState is not None:
+                        prevWhiteReward = torch.tensor([0], device=self.device, dtype=torch.float)
+                        self.memory.push(prevWhiteState, prevWhiteAction, state, prevWhiteReward)
+                    prevWhiteState = state
+                    prevWhiteAction = action
             moveCount += 1
-            if moveCount >= 15**2 - 1 and not episodeEnd:
-                reward = 0.1 # both color get reward if they survive to this point.
-                if moveCount == 15**2:
-                    print('Game draw.')
-                    episodeEnd = True
-            reward = torch.tensor([reward], device=self.device, dtype=torch.float)
-            if blackMove:
-                if prevBlackState is not None:
-                    self.memory.push(prevBlackState, prevBlackAction, state, prevBlackReward)
-                prevBlackState = state
-                prevBlackAction = action
-                prevBlackReward = reward
-            else:
-                if prevWhiteState is not None:
-                    self.memory.push(prevWhiteState, prevWhiteAction, state, prevWhiteReward)
-                prevWhiteState = state
-                prevWhiteAction = action
-                prevWhiteReward = reward
+            if moveCount == 15**2:
+                print('Game draw.')
+                episodeEnd = True
+            blackMove = False if blackMove else True
         return blackView, whiteView
+
+    def optimize(self, iterate=1):
+        for i in range(iterate):
+            if len(self.memory) < self.batchSize:
+                return
+            transitions = self.memory.sample(self.batchSize)
+            batch = Transition(*zip(*transitions))
+            prevStateBatch = torch.cat(batch.prevState)
+            prevActionBatch = torch.cat(batch.prevAction)
+            non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
+                                          batch.state)), device=self.device, dtype=torch.uint8)
+            non_final_states = torch.cat([s for s in batch.state
+                                                if s is not None])
+            prevRewardBatch = torch.cat(batch.prevReward)
+            
+            prevValues = self.net(prevStateBatch).gather(1, prevActionBatch)
+            stateValues = torch.zeros(self.batchSize, device=self.device)
+            stateValues[non_final_mask] = self.net(non_final_states).max(1)[0]
+            expectedValues = (stateValues * self.gamma) + prevRewardBatch
+            loss = F.smooth_l1_loss(prevValues, expectedValues.unsqueeze(1))
+            self.optimizer.zero_grad()
+            loss.backward()
+            for param in self.net.parameters():
+                param.grad.data.clamp_(-1, 1)
+            self.optimizer.step()
+        return loss
 
     def checkWin(self, selfView, r, c):
         n_count = self.getContinuousNum(selfView, r, c, -1, 0)
@@ -171,28 +202,6 @@ class Gomoku:
                 break
             i += 1
         return result
-
-    def optimize(self, iterate=1):
-        for i in range(iterate):
-            if len(self.memory) < self.batchSize:
-                return
-            transitions = self.memory.sample(self.batchSize)
-            batch = Transition(*zip(*transitions))
-            prevStateBatch = torch.cat(batch.prevState)
-            prevActionBatch = torch.cat(batch.prevAction)
-            stateBatch = torch.cat(batch.state)
-            prevRewardBatch = torch.cat(batch.prevReward)
-            prevValues = self.net(prevStateBatch).gather(1, prevActionBatch)
-            with torch.no_grad():
-                stateValues = self.net(stateBatch).max(1)[0]
-            expectedValues = (stateValues * self.gamma) + prevRewardBatch
-            loss = F.smooth_l1_loss(prevValues, expectedValues.unsqueeze(1))
-            self.optimizer.zero_grad()
-            loss.backward()
-            for param in self.net.parameters():
-                param.grad.data.clamp_(-1, 1)
-            self.optimizer.step()
-        return loss
 
     def loopDisplay(self):
         while self.going:

@@ -3,7 +3,6 @@ To do:
     1 use adam or rmsprop.
 '''
 
-import pygame
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,15 +21,15 @@ DEVICE = torch.device('cuda')
 Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
 
 def main():
-    g = Gomoku(visualize=0, saveModel=1, loadModel=1)
-#    g.train()
+    g = Gomoku(visualize=0, saveModel=0, loadModel=1)
+    g.train()
 #    g.display()
-    g.test(selfplay=0, chooseBlack=1)
+#    g.test(selfplay=0, chooseBlack=1)
     del g
 
 class Gomoku:
     def __init__(self, visualize, saveModel, loadModel):
-        self.episodeNum = 500
+        self.episodeNum = 150
         self.trainPerEpisode = 10
         self.batchSize = 256
         self.learningRate = 0.01
@@ -53,6 +52,7 @@ class Gomoku:
         torch.cuda.empty_cache()
 
     def display(self, ai=0, selfplay=0, chooseBlack=1):
+        import pygame
         pygame.init()
 
         self.screen = pygame.display.set_mode((700, 500))

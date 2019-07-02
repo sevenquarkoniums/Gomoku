@@ -34,8 +34,8 @@ class Gomoku:
         self.batchSize = 256
         self.learningRate = 0.01
         self.gamma = 0.999
-        self.memorySize = 5000
-        self.thresStart, self.thresEnd, self.thresDecay = 1, 0.05, 500
+        self.memorySize = 1000
+        self.thresStart, self.thresEnd, self.thresDecay = 1, 0.05, 1000
         
         self.device = DEVICE
         self.blackView, self.whiteView = torch.zeros(15, 15), torch.zeros(15, 15)
@@ -74,7 +74,8 @@ class Gomoku:
             self.net.load_state_dict(torch.load('gomoku.pt'))
         self.optimizer = optim.SGD(self.net.parameters(), lr=self.learningRate, momentum=0.9, weight_decay=0.01)
         self.memory = replayMemory(self.memorySize)
-        self.memoryReward = replayMemory(self.memorySize)
+        self.memoryWin = replayMemory(self.memorySize)
+        self.memoryLose = replayMemory(self.memorySize)
         start = time.time()
         losses = []
         lastTen = []
@@ -108,9 +109,11 @@ class Gomoku:
         whiteView = torch.zeros(15,15).to(self.device)
         episodeEnd = False
         blackMove = True
+        draw = False
         moveCount = 0
         prevBlackState, prevBlackAction = None, None
         prevWhiteState, prevWhiteAction = None, None
+        blackTrans, whiteTrans = [], []
         while not episodeEnd:
             state = torch.stack([torch.unsqueeze(blackView, 0), torch.unsqueeze(whiteView, 0)] \
                                  if blackMove else [torch.unsqueeze(whiteView, 0),  torch.unsqueeze(blackView, 0)], dim=1)
@@ -128,55 +131,52 @@ class Gomoku:
                 moveRow, moveCol = moveRow.item(), moveCol.item()
             action = torch.tensor([[moveRow * 15 + moveCol]], device=self.device)
             if blackMove:
+                blackTrans.append((prevBlackMoveState, prevBlackAction, state)
                 if exist[moveRow, moveCol] == 0:
                     blackView[moveRow, moveCol] = 1
                     if self.checkWin(blackView, moveRow, moveCol):
-                        reward = torch.tensor([1], device=self.device, dtype=torch.float)
-                        self.memoryReward.push(state, action, None, reward)
+                        blackTrans.append((state, action, None))
                         episodeEnd = True
-                    else:
-                        if prevBlackState is not None:
-                            prevBlackReward = torch.tensor([0], device=self.device, dtype=torch.float)
-                            self.memory.push(prevBlackState, prevBlackAction, state, prevBlackReward)
-                        prevBlackState = state
-                        prevBlackAction = action
-                else:
-                    if prevBlackState is not None:
-                        prevBlackReward = torch.tensor([0], device=self.device, dtype=torch.float)
-                        self.memory.push(prevBlackState, prevBlackAction, state, prevBlackReward)
-                    prevBlackState = state
-                    prevBlackAction = action
+                        blackWin = True
+                prevBlackState = state
+                prevBlackAction = action
             else:
+                WhiteTrans.append((prevWhiteMoveState, prevWhiteAction, state)
                 if exist[moveRow, moveCol] == 0:
                     whiteView[moveRow, moveCol] = 1
                     if self.checkWin(whiteView, moveRow, moveCol):
-                        reward = torch.tensor([1], device=self.device, dtype=torch.float)
-                        self.memoryReward.push(state, action, None, reward)
+                        whiteTrans.append((state, action, None))
                         episodeEnd = True
-                    else:
-                        if prevWhiteState is not None:
-                            prevWhiteReward = torch.tensor([0], device=self.device, dtype=torch.float)
-                            self.memory.push(prevWhiteState, prevWhiteAction, state, prevWhiteReward)
-                        prevWhiteState = state
-                        prevWhiteAction = action
-                else:
-                    if prevWhiteState is not None:
-                        prevWhiteReward = torch.tensor([0], device=self.device, dtype=torch.float)
-                        self.memory.push(prevWhiteState, prevWhiteAction, state, prevWhiteReward)
-                    prevWhiteState = state
-                    prevWhiteAction = action            
+                        blackWin = False
+                prevWhiteState = state
+                prevWhiteAction = action            
             moveCount += 1
             if moveCount == 15**2:
                 print('Game draw.')
                 episodeEnd = True
+                draw = True
             blackMove = False if blackMove else True
+        for tran in blackTrans[:-1] + whiteTrans[:-1]:
+            reward0 = torch.tensor([0], device=self.device, dtype=torch.float)
+            self.memory.push(tran[0], tran[1], tran[2], reward0)
+        if blackWin and not draw:
+            reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
+            rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
+            self.memoryWin.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
+            self.memoryLose.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
+        if not blackWin and not draw:
+            reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
+            rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
+            self.memoryLose.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
+            self.memoryWin.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
         return blackView, whiteView
 
     def optimize(self, iterate=1):
         for i in range(iterate):
-            if len(self.memory) < self.batchSize//2 or len(self.memoryReward) < self.batchSize//2:
+            if len(self.memoryLose) < self.batchSize//3 or len(self.memoryWin) < self.batchSize//3:
                 return
-            transitions = self.memory.sample(self.batchSize//2) + self.memoryReward.sample(self.batchSize//2)
+            transitions = self.memory.sample(self.batchSize//3) + self.memoryWin.sample(self.batchSize//3) \
+                                  + self.memoryLose.sample(self.batchSize//3)
             batch = Transition(*zip(*transitions))
             prevStateBatch = torch.cat(batch.prevState)
             prevActionBatch = torch.cat(batch.prevAction)
@@ -326,7 +326,7 @@ class Chessboard:
                              if self.piece == 1 else [torch.unsqueeze(whiteView, 0),  torch.unsqueeze(blackView, 0)], dim=1)
         with torch.no_grad():
             values = self.model.forward(state)
-#                        print(values)
+        print(values)
         values = values.view(-1, 15, 15) * (1 - blackView - whiteView) - (blackView + whiteView)
         values = torch.squeeze(values)
         index = torch.argmax(values).item()

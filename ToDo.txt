@@ -11,3 +11,7 @@
 3. Use adam or rmsprop optimizer.
 4. Use more resnet blocks. https://www.kaggle.com/readilen/resnet-for-mnist-with-pytorch
 5. Population based training for hyperparameters.
+
+# Done:
+1. Tanh in (0, 1) changed to relu, because a value 1 is not approachable for tanh.
+2. In each batch, memories with or without reward are balanced.

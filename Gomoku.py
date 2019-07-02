@@ -74,7 +74,7 @@ class Gomoku:
             self.net.load_state_dict(torch.load('gomoku.pt'))
         self.optimizer = optim.SGD(self.net.parameters(), lr=self.learningRate, momentum=0.9, weight_decay=0.01)
         self.memory = replayMemory(self.memorySize)
-        self.memoryEnding = replayMemory(self.memorySize)
+        self.memoryReward = replayMemory(self.memorySize)
         start = time.time()
         losses = []
         lastTen = []
@@ -115,26 +115,31 @@ class Gomoku:
             state = torch.stack([torch.unsqueeze(blackView, 0), torch.unsqueeze(whiteView, 0)] \
                                  if blackMove else [torch.unsqueeze(whiteView, 0),  torch.unsqueeze(blackView, 0)], dim=1)
             sample = random.random()
+            exist = blackView + whiteView
             if sample > self.moveThres: # use network to select move.
                 with torch.no_grad():
                     values = self.net.forward(state)
-                exist = blackView + whiteView
-                values = values.view(-1, 15, 15) * (1 - exist) - 100 * exist
                 values = torch.squeeze(values)
                 index = torch.argmax(values).item()
                 moveRow, moveCol = index // 15, index % 15
             else: # random move.
-                exist = blackView + whiteView
                 possible = (exist==0).nonzero()
                 moveRow, moveCol = possible[torch.randint(0, possible.size(0), (1, 1)).item()]
                 moveRow, moveCol = moveRow.item(), moveCol.item()
             action = torch.tensor([[moveRow * 15 + moveCol]], device=self.device)
             if blackMove:
-                blackView[moveRow, moveCol] = 1
-                if self.checkWin(blackView, moveRow, moveCol):
-                    reward = torch.tensor([1], device=self.device, dtype=torch.float)
-                    self.memoryEnding.push(state, action, None, reward)
-                    episodeEnd = True
+                if exist[moveRow, moveCol] == 0:
+                    blackView[moveRow, moveCol] = 1
+                    if self.checkWin(blackView, moveRow, moveCol):
+                        reward = torch.tensor([1], device=self.device, dtype=torch.float)
+                        self.memoryReward.push(state, action, None, reward)
+                        episodeEnd = True
+                    else:
+                        if prevBlackState is not None:
+                            prevBlackReward = torch.tensor([0], device=self.device, dtype=torch.float)
+                            self.memory.push(prevBlackState, prevBlackAction, state, prevBlackReward)
+                        prevBlackState = state
+                        prevBlackAction = action
                 else:
                     if prevBlackState is not None:
                         prevBlackReward = torch.tensor([0], device=self.device, dtype=torch.float)
@@ -142,17 +147,24 @@ class Gomoku:
                     prevBlackState = state
                     prevBlackAction = action
             else:
-                whiteView[moveRow, moveCol] = 1
-                if self.checkWin(whiteView, moveRow, moveCol):
-                    reward = torch.tensor([1], device=self.device, dtype=torch.float)
-                    self.memoryEnding.push(state, action, None, reward)
-                    episodeEnd = True
+                if exist[moveRow, moveCol] == 0:
+                    whiteView[moveRow, moveCol] = 1
+                    if self.checkWin(whiteView, moveRow, moveCol):
+                        reward = torch.tensor([1], device=self.device, dtype=torch.float)
+                        self.memoryReward.push(state, action, None, reward)
+                        episodeEnd = True
+                    else:
+                        if prevWhiteState is not None:
+                            prevWhiteReward = torch.tensor([0], device=self.device, dtype=torch.float)
+                            self.memory.push(prevWhiteState, prevWhiteAction, state, prevWhiteReward)
+                        prevWhiteState = state
+                        prevWhiteAction = action
                 else:
                     if prevWhiteState is not None:
                         prevWhiteReward = torch.tensor([0], device=self.device, dtype=torch.float)
                         self.memory.push(prevWhiteState, prevWhiteAction, state, prevWhiteReward)
                     prevWhiteState = state
-                    prevWhiteAction = action
+                    prevWhiteAction = action            
             moveCount += 1
             if moveCount == 15**2:
                 print('Game draw.')
@@ -162,9 +174,9 @@ class Gomoku:
 
     def optimize(self, iterate=1):
         for i in range(iterate):
-            if len(self.memory) < self.batchSize//2 or len(self.memoryEnding) < self.batchSize//2:
+            if len(self.memory) < self.batchSize//2 or len(self.memoryReward) < self.batchSize//2:
                 return
-            transitions = self.memory.sample(self.batchSize//2) + self.memoryEnding.sample(self.batchSize//2)
+            transitions = self.memory.sample(self.batchSize//2) + self.memoryReward.sample(self.batchSize//2)
             batch = Transition(*zip(*transitions))
             prevStateBatch = torch.cat(batch.prevState)
             prevActionBatch = torch.cat(batch.prevAction)
@@ -249,45 +261,25 @@ class Gomoku:
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.conv1 = nn.Conv2d(2, 128, 3, 1, 1)
-        self.bn1 = torch.nn.BatchNorm2d(128)
-        self.pool = nn.MaxPool2d(3)
-        self.conv2 = nn.Conv2d(128, 128, 3, 1, 1)
-        self.conv3 = nn.Conv2d(128, 32, 1)
-        self.bn2 = torch.nn.BatchNorm2d(32)
-        self.fc1 = nn.Linear(5*5*32, 5*5*32)
-        self.fc2 = nn.Linear(5*5*32, 15**2)
-        
-#        self.conv4 = nn.Conv2d(64, 4, 1)
-#        self.bn3 = torch.nn.BatchNorm2d(4)
-#        self.fc2 = nn.Linear(5*5*4, 128)
-#        self.bn4 = torch.nn.BatchNorm1d(128)
-#        self.fc3 = nn.Linear(128, 1)
+        self.conv1 = nn.Conv2d(2, 16, 3, 1, 1)
+        self.bn16 = nn.BatchNorm2d(16)
+        self.conv2 = nn.Conv2d(16, 32, 3, 1, 1)
+        self.conv2_2 = nn.Conv2d(32, 32, 3, 1, 1)
+        self.conv3 = nn.Conv2d(32, 64, 3, 1, 1)
+        self.conv3_2 = nn.Conv2d(64, 64, 3, 1, 1)
+        self.bn32 = nn.BatchNorm2d(32)
+        self.bn64 = nn.BatchNorm2d(64)
+        self.conv4 = nn.Conv2d(64, 1, 3, 1, 1)
+        self.bn1 = nn.BatchNorm2d(1)
 
     def forward(self, x):
-        x = F.relu(self.bn1(self.conv1(x)))
-        y = F.relu(self.bn1(self.conv2(x)))
-        x = F.relu(self.bn1(self.conv2(y)) + x)
-        y = F.relu(self.bn1(self.conv2(x)))
-        x = F.relu(self.bn1(self.conv2(y)) + x)
-        y = F.relu(self.bn1(self.conv2(x)))
-        x = F.relu(self.bn1(self.conv2(y)) + x)
-        y = F.relu(self.bn1(self.conv2(x)))
-        x = F.relu(self.bn1(self.conv2(y)) + x)
-        y = F.relu(self.bn1(self.conv2(x)))
-        x = F.relu(self.bn1(self.conv2(y)) + x)
-        y = F.relu(self.bn1(self.conv2(x)))
-        x = F.relu(self.bn1(self.conv2(y)) + x)
-        x = self.pool(x)
-        x = F.relu(self.bn2(self.conv3(x)))
-        x = x.view(-1, 5*5*32)
-        x = F.relu(self.fc1(x))
-        x = (torch.tanh(self.fc2(x)) + 1) / 2
-#        value = F.relu(self.bn3(self.conv4(x)))
-#        value = value.view(-1, 5*5*4)
-#        value = F.relu(self.fc2(value))
-#        value = (torch.tanh(self.fc3(value)) + 1) / 2
-        return x
+        x = F.relu(self.bn16(self.conv1(x)))
+        y = F.relu(self.bn32(self.conv2(x)))
+        x = F.relu(self.bn32(self.conv2_2(y)) + x)
+        y = F.relu(self.bn64(self.conv3(x)))
+        x = F.relu(self.bn64(self.conv3_2(y)) + x)
+        x = F.relu(self.bn1(self.conv4(x)))
+        return x.view(-1, 15*15)
 
 class replayMemory(object):
 

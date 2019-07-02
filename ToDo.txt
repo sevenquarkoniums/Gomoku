@@ -1,0 +1,13 @@
+# Gomoku
+
+# To Do:
+-3. Make network smaller, with 16,32,64 resnet.
+-2. Always select the maximum move. Overlapping move just get ignored by the environment.
+-1. Use avgpool. nn.AvgPool2d(3)
+0. Change action into 2d. 
+1. May add the action as an input to the Q function.
+1.5. Add loss reward. This will motivate defensive action.
+2. Add internal reward. Use log uniform to initialize. https://stackoverflow.com/questions/43977717/how-do-i-generate-log-uniform-distribution-in-python
+3. Use adam or rmsprop optimizer.
+4. Use more resnet blocks. https://www.kaggle.com/readilen/resnet-for-mnist-with-pytorch
+5. Population based training for hyperparameters.

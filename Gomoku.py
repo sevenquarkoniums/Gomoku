@@ -1,6 +1,5 @@
 '''
-To do:
-    1 use adam or rmsprop.
+Gomoku.
 '''
 
 import torch
@@ -14,8 +13,11 @@ import random
 from collections import namedtuple
 import matplotlib.pyplot as plt
 from sys import exit
-random.seed(0)
-torch.manual_seed(0)
+import os
+if os.name == 'nt':
+    import pygame
+#random.seed(0)
+#torch.manual_seed(0)
 
 DEVICE = torch.device('cuda')
 Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
@@ -52,7 +54,6 @@ class Gomoku:
         torch.cuda.empty_cache()
 
     def display(self, ai=0, selfplay=0, chooseBlack=1):
-        import pygame
         pygame.init()
 
         self.screen = pygame.display.set_mode((700, 500))

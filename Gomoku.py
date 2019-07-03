@@ -271,7 +271,7 @@ class Net(nn.Module):
         self.bn32 = nn.BatchNorm2d(32)
         self.bn64 = nn.BatchNorm2d(64)
         self.conv4 = nn.Conv2d(64, 1, 3, 1, 1)
-        self.bn1 = nn.BatchNorm2d(1)
+#        self.bn1 = nn.BatchNorm2d(1)
 
     def forward(self, x):
         x = F.relu(self.bn16(self.conv1(x)))
@@ -279,7 +279,7 @@ class Net(nn.Module):
         x = F.relu(self.bn32(self.conv2_2(y)))
         y = F.relu(self.bn64(self.conv3(x)))
         x = F.relu(self.bn64(self.conv3_2(y)))
-        x = F.relu(self.bn1(self.conv4(x)))
+        x = self.conv4(x)
         return x.view(-1, 15*15)
 
 class replayMemory(object):

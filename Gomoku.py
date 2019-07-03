@@ -23,7 +23,7 @@ DEVICE = torch.device('cuda')
 Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
 
 def main():
-    g = Gomoku(visualize=0, saveModel=1, loadModel=0)
+    g = Gomoku(visualize=0, saveModel=1, loadModel=1)
     g.train()
 #    g.display()
 #    g.test(selfplay=0, chooseBlack=1)
@@ -31,13 +31,13 @@ def main():
 
 class Gomoku:
     def __init__(self, visualize, saveModel, loadModel):
-        self.episodeNum = 200
+        self.episodeNum = 4000
         self.trainPerEpisode = 10
         self.batchSize = 1024
-        self.learningRate = 0.01
+        self.learningRate = 0.0001
         self.gamma = 0.999
         self.memorySize = 1000
-        self.thresStart, self.thresEnd, self.thresDecay = 1, 0.05, 1000
+        self.thresStart, self.thresEnd, self.thresDecay = 1, 0.05, 2000
         
         self.device = DEVICE
         self.blackView, self.whiteView = torch.zeros(15, 15), torch.zeros(15, 15)
@@ -160,16 +160,17 @@ class Gomoku:
         for tran in blackTrans[1:-1] + whiteTrans[1:-1]:
             reward0 = torch.tensor([0], device=self.device, dtype=torch.float)
             self.memory.push(tran[0], tran[1], tran[2], reward0)
-        if blackWin and not draw:
-            reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
-            rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
-            self.memoryWin.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
-            self.memoryLose.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
-        if not blackWin and not draw:
-            reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
-            rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
-            self.memoryLose.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
-            self.memoryWin.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
+        if not draw:
+            if blackWin:
+                reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
+                rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
+                self.memoryWin.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
+                self.memoryLose.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
+            if not blackWin:
+                reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
+                rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
+                self.memoryLose.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
+                self.memoryWin.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
         return blackView, whiteView
 
     def optimize(self, iterate=1):
@@ -332,6 +333,7 @@ class Chessboard:
         values = torch.squeeze(values)
         index = torch.argmax(values).item()
         moveRow, moveCol = index // 15, index % 15
+        print('%d  %d' % (moveRow, moveCol))
         if self.grid[moveRow][moveCol] == 0:
             self.grid[moveRow][moveCol] = self.piece 
             # cannot handle draw !!

@@ -16,8 +16,8 @@ from sys import exit
 import os
 if os.name == 'nt':
     import pygame
-random.seed(0)
-torch.manual_seed(0)
+#random.seed(0)
+#torch.manual_seed(0)
 
 DEVICE = torch.device('cuda')
 Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
@@ -33,7 +33,7 @@ class Gomoku:
     def __init__(self, visualize, saveModel, loadModel):
         self.episodeNum = 200
         self.trainPerEpisode = 10
-        self.batchSize = 512
+        self.batchSize = 1024
         self.learningRate = 0.01
         self.gamma = 0.999
         self.memorySize = 1000
@@ -81,8 +81,6 @@ class Gomoku:
         losses = []
         lastTen = []
         for episode in range(self.episodeNum):
-            if episode == 180:
-                start = time.time()
             self.moveThres = self.thresEnd + (self.thresStart - self.thresEnd) * math.exp(-episode/self.thresDecay)
             blackView, whiteView = self.playGame()
             loss = self.optimize(iterate=self.trainPerEpisode)

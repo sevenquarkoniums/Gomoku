@@ -31,7 +31,7 @@ def main():
 
 class Gomoku:
     def __init__(self, visualize, saveModel, loadModel):
-        self.episodeNum = 300
+        self.episodeNum = 200
         self.trainPerEpisode = 10
         self.batchSize = 512
         self.learningRate = 0.01
@@ -81,6 +81,8 @@ class Gomoku:
         losses = []
         lastTen = []
         for episode in range(self.episodeNum):
+            if episode == 180:
+                start = time.time()
             self.moveThres = self.thresEnd + (self.thresStart - self.thresEnd) * math.exp(-episode/self.thresDecay)
             blackView, whiteView = self.playGame()
             loss = self.optimize(iterate=self.trainPerEpisode)

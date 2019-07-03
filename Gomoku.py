@@ -16,14 +16,14 @@ from sys import exit
 import os
 if os.name == 'nt':
     import pygame
-#random.seed(0)
-#torch.manual_seed(0)
+random.seed(0)
+torch.manual_seed(0)
 
 DEVICE = torch.device('cuda')
 Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
 
 def main():
-    g = Gomoku(visualize=0, saveModel=0, loadModel=1)
+    g = Gomoku(visualize=0, saveModel=1, loadModel=0)
     g.train()
 #    g.display()
 #    g.test(selfplay=0, chooseBlack=1)
@@ -31,9 +31,9 @@ def main():
 
 class Gomoku:
     def __init__(self, visualize, saveModel, loadModel):
-        self.episodeNum = 150
+        self.episodeNum = 300
         self.trainPerEpisode = 10
-        self.batchSize = 256
+        self.batchSize = 512
         self.learningRate = 0.01
         self.gamma = 0.999
         self.memorySize = 1000
@@ -112,8 +112,8 @@ class Gomoku:
         blackMove = True
         draw = False
         moveCount = 0
-        prevBlackState, prevBlackAction = None, None
-        prevWhiteState, prevWhiteAction = None, None
+        prevBlackMoveState, prevBlackAction = None, None
+        prevWhiteMoveState, prevWhiteAction = None, None
         blackTrans, whiteTrans = [], []
         while not episodeEnd:
             state = torch.stack([torch.unsqueeze(blackView, 0), torch.unsqueeze(whiteView, 0)] \
@@ -132,24 +132,24 @@ class Gomoku:
                 moveRow, moveCol = moveRow.item(), moveCol.item()
             action = torch.tensor([[moveRow * 15 + moveCol]], device=self.device)
             if blackMove:
-                blackTrans.append((prevBlackMoveState, prevBlackAction, state)
+                blackTrans.append((prevBlackMoveState, prevBlackAction, state))
                 if exist[moveRow, moveCol] == 0:
                     blackView[moveRow, moveCol] = 1
                     if self.checkWin(blackView, moveRow, moveCol):
                         blackTrans.append((state, action, None))
                         episodeEnd = True
                         blackWin = True
-                prevBlackState = state
+                prevBlackMoveState = state
                 prevBlackAction = action
             else:
-                WhiteTrans.append((prevWhiteMoveState, prevWhiteAction, state)
+                whiteTrans.append((prevWhiteMoveState, prevWhiteAction, state))
                 if exist[moveRow, moveCol] == 0:
                     whiteView[moveRow, moveCol] = 1
                     if self.checkWin(whiteView, moveRow, moveCol):
                         whiteTrans.append((state, action, None))
                         episodeEnd = True
                         blackWin = False
-                prevWhiteState = state
+                prevWhiteMoveState = state
                 prevWhiteAction = action            
             moveCount += 1
             if moveCount == 15**2:
@@ -157,7 +157,7 @@ class Gomoku:
                 episodeEnd = True
                 draw = True
             blackMove = False if blackMove else True
-        for tran in blackTrans[:-1] + whiteTrans[:-1]:
+        for tran in blackTrans[1:-1] + whiteTrans[1:-1]:
             reward0 = torch.tensor([0], device=self.device, dtype=torch.float)
             self.memory.push(tran[0], tran[1], tran[2], reward0)
         if blackWin and not draw:
@@ -176,7 +176,7 @@ class Gomoku:
         for i in range(iterate):
             if len(self.memoryLose) < self.batchSize//3 or len(self.memoryWin) < self.batchSize//3:
                 return
-            transitions = self.memory.sample(self.batchSize//3) + self.memoryWin.sample(self.batchSize//3) \
+            transitions = self.memory.sample(self.batchSize - self.batchSize//3 * 2) + self.memoryWin.sample(self.batchSize//3) \
                                   + self.memoryLose.sample(self.batchSize//3)
             batch = Transition(*zip(*transitions))
             prevStateBatch = torch.cat(batch.prevState)
@@ -276,9 +276,9 @@ class Net(nn.Module):
     def forward(self, x):
         x = F.relu(self.bn16(self.conv1(x)))
         y = F.relu(self.bn32(self.conv2(x)))
-        x = F.relu(self.bn32(self.conv2_2(y)) + x)
+        x = F.relu(self.bn32(self.conv2_2(y)))
         y = F.relu(self.bn64(self.conv3(x)))
-        x = F.relu(self.bn64(self.conv3_2(y)) + x)
+        x = F.relu(self.bn64(self.conv3_2(y)))
         x = F.relu(self.bn1(self.conv4(x)))
         return x.view(-1, 15*15)
 
@@ -328,13 +328,14 @@ class Chessboard:
         with torch.no_grad():
             values = self.model.forward(state)
         print(values)
-        values = values.view(-1, 15, 15) * (1 - blackView - whiteView) - (blackView + whiteView)
+#        values = values.view(-1, 15, 15) * (1 - blackView - whiteView) - (blackView + whiteView)
         values = torch.squeeze(values)
         index = torch.argmax(values).item()
         moveRow, moveCol = index // 15, index % 15
-        self.grid[moveRow][moveCol] = self.piece 
+        if self.grid[moveRow][moveCol] == 0:
+            self.grid[moveRow][moveCol] = self.piece 
             # cannot handle draw !!
-        self.check_win(moveRow, moveCol)
+            self.check_win(moveRow, moveCol)
         self.piece = 1 if self.piece == -1 else -1
 
     def handle_key_event(self, e, ai, selfplay, chooseBlack):

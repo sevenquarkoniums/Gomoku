@@ -20,10 +20,14 @@ if os.name == 'nt':
 #torch.manual_seed(0)
 
 DEVICE = torch.device('cuda')
-Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
+METHOD = 'predict' # RL, predict.
+if METHOD == 'RL':
+    Transition = namedtuple('Transition', ('prevState', 'prevAction', 'state', 'prevReward'))
+elif METHOD == 'predict':
+    Transition = namedtuple('Transition', ('state', 'action'))
 
 def main():
-    g = Gomoku(visualize=0, saveModel=1, loadModel=1)
+    g = Gomoku(visualize=0, saveModel=1, loadModel=0)
     g.train()
 #    g.display()
 #    g.test(selfplay=0, chooseBlack=1)
@@ -31,13 +35,13 @@ def main():
 
 class Gomoku:
     def __init__(self, visualize, saveModel, loadModel):
-        self.episodeNum = 4000
+        self.episodeNum = 10000
         self.trainPerEpisode = 10
         self.batchSize = 1024
-        self.learningRate = 0.0001
+        self.learningRate = 0.01
         self.gamma = 0.999
         self.memorySize = 1000
-        self.thresStart, self.thresEnd, self.thresDecay = 1, 0.05, 2000
+        self.thresStart, self.thresEnd, self.thresDecay = 1, 0.05, 5000
         
         self.device = DEVICE
         self.blackView, self.whiteView = torch.zeros(15, 15), torch.zeros(15, 15)
@@ -67,10 +71,14 @@ class Gomoku:
         self.loopDisplay(ai, selfplay, chooseBlack)
     
     def train(self):
-        self.net = Net().to(self.device)
-        self.targetNet = Net().to(self.device)
-        self.targetNet.load_state_dict(self.net.state_dict())
-        self.targetNet.eval()
+        if METHOD == 'RL':
+            self.net = RLNet().to(self.device)
+            self.targetNet = RLNet().to(self.device)
+            self.targetNet.load_state_dict(self.net.state_dict())
+            self.targetNet.eval()
+        elif METHOD == 'predict':
+            self.net = predictNet().to(self.device)
+            self.criterion = nn.CrossEntropyLoss()
         if self.loadModel:
             self.net.load_state_dict(torch.load('gomoku.pt'))
         self.optimizer = optim.SGD(self.net.parameters(), lr=self.learningRate, momentum=0.9, weight_decay=0.01)
@@ -94,7 +102,8 @@ class Gomoku:
                 lastTen = []
             if self.saveModel and (episode+1) % 100 == 0:
                 torch.save(self.net.state_dict(), 'gomoku.pt')
-            self.targetNet.load_state_dict(self.net.state_dict())
+            if METHOD == 'RL':
+                self.targetNet.load_state_dict(self.net.state_dict())
         end = time.time()
         print('Time: %.f s' % (end-start))
         self.blackView = blackView.to('cpu')
@@ -130,69 +139,93 @@ class Gomoku:
                 possible = (exist==0).nonzero()
                 moveRow, moveCol = possible[torch.randint(0, possible.size(0), (1, 1)).item()]
                 moveRow, moveCol = moveRow.item(), moveCol.item()
-            action = torch.tensor([[moveRow * 15 + moveCol]], device=self.device)
+            if METHOD == 'RL':
+                action = torch.tensor([[moveRow * 15 + moveCol]], device=self.device)
+            elif METHOD == 'predict':
+                action = torch.tensor([moveRow * 15 + moveCol], device=self.device)
             if blackMove:
-                blackTrans.append((prevBlackMoveState, prevBlackAction, state))
                 if exist[moveRow, moveCol] == 0:
                     blackView[moveRow, moveCol] = 1
                     if self.checkWin(blackView, moveRow, moveCol):
-                        blackTrans.append((state, action, None))
+                        if METHOD == 'RL':
+                            blackTrans.append((state, action, None))
+                        elif METHOD == 'predict':
+                            self.memoryWin.push(state, action)
                         episodeEnd = True
                         blackWin = True
-                prevBlackMoveState = state
-                prevBlackAction = action
+                if METHOD == 'RL':
+                    blackTrans.append((prevBlackMoveState, prevBlackAction, state))
+                    prevBlackMoveState = state
+                    prevBlackAction = action
             else:
-                whiteTrans.append((prevWhiteMoveState, prevWhiteAction, state))
                 if exist[moveRow, moveCol] == 0:
                     whiteView[moveRow, moveCol] = 1
                     if self.checkWin(whiteView, moveRow, moveCol):
-                        whiteTrans.append((state, action, None))
+                        if METHOD == 'RL':
+                            whiteTrans.append((state, action, None))
+                        elif METHOD == 'predict':
+                            self.memoryWin.push(state, action)
                         episodeEnd = True
                         blackWin = False
-                prevWhiteMoveState = state
-                prevWhiteAction = action            
+                if METHOD == 'RL':
+                    whiteTrans.append((prevWhiteMoveState, prevWhiteAction, state))
+                    prevWhiteMoveState = state
+                    prevWhiteAction = action            
             moveCount += 1
             if moveCount == 15**2:
                 print('Game draw.')
                 episodeEnd = True
                 draw = True
             blackMove = False if blackMove else True
-        for tran in blackTrans[1:-1] + whiteTrans[1:-1]:
-            reward0 = torch.tensor([0], device=self.device, dtype=torch.float)
-            self.memory.push(tran[0], tran[1], tran[2], reward0)
-        if not draw:
-            if blackWin:
-                reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
-                rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
-                self.memoryWin.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
-                self.memoryLose.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
-            if not blackWin:
-                reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
-                rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
-                self.memoryLose.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
-                self.memoryWin.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
+            # this episode finished.
+            
+        if METHOD == 'RL':
+            for tran in blackTrans[1:-1] + whiteTrans[1:-1]:
+                reward0 = torch.tensor([0], device=self.device, dtype=torch.float)
+                self.memory.push(tran[0], tran[1], tran[2], reward0)
+            if not draw:
+                if blackWin:
+                    reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
+                    rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
+                    self.memoryWin.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
+                    self.memoryLose.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
+                if not blackWin:
+                    reward1 = torch.tensor([1], device=self.device, dtype=torch.float)
+                    rewardm1 = torch.tensor([-1], device=self.device, dtype=torch.float)
+                    self.memoryLose.push(blackTrans[-1][0], blackTrans[-1][1], blackTrans[-1][2], reward1)
+                    self.memoryWin.push(whiteTrans[-1][0], whiteTrans[-1][1], whiteTrans[-1][2], rewardm1)
         return blackView, whiteView
 
     def optimize(self, iterate=1):
         for i in range(iterate):
-            if len(self.memoryLose) < self.batchSize//3 or len(self.memoryWin) < self.batchSize//3:
-                return
-            transitions = self.memory.sample(self.batchSize - self.batchSize//3 * 2) + self.memoryWin.sample(self.batchSize//3) \
-                                  + self.memoryLose.sample(self.batchSize//3)
-            batch = Transition(*zip(*transitions))
-            prevStateBatch = torch.cat(batch.prevState)
-            prevActionBatch = torch.cat(batch.prevAction)
-            non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
-                                          batch.state)), device=self.device, dtype=torch.uint8)
-            non_final_states = torch.cat([s for s in batch.state
-                                                if s is not None])
-            prevRewardBatch = torch.cat(batch.prevReward)
-            
-            prevValues = self.net(prevStateBatch).gather(1, prevActionBatch)
-            stateValues = torch.zeros(self.batchSize, device=self.device)
-            stateValues[non_final_mask] = self.targetNet(non_final_states).max(1)[0]
-            expectedValues = (stateValues * self.gamma) + prevRewardBatch
-            loss = F.smooth_l1_loss(prevValues, expectedValues.unsqueeze(1))
+            if METHOD == 'RL':
+                if len(self.memoryLose) < self.batchSize//3 or len(self.memoryWin) < self.batchSize//3:
+                    return
+                transitions = self.memory.sample(self.batchSize - self.batchSize//3 * 2) + self.memoryWin.sample(self.batchSize//3) \
+                                      + self.memoryLose.sample(self.batchSize//3)
+                batch = Transition(*zip(*transitions))
+                prevStateBatch = torch.cat(batch.prevState)
+                prevActionBatch = torch.cat(batch.prevAction)
+                non_final_mask = torch.tensor(tuple(map(lambda s: s is not None,
+                                              batch.state)), device=self.device, dtype=torch.uint8)
+                non_final_states = torch.cat([s for s in batch.state
+                                                    if s is not None])
+                prevRewardBatch = torch.cat(batch.prevReward)
+                
+                prevValues = self.net(prevStateBatch).gather(1, prevActionBatch)
+                stateValues = torch.zeros(self.batchSize, device=self.device)
+                stateValues[non_final_mask] = self.targetNet(non_final_states).max(1)[0]
+                expectedValues = (stateValues * self.gamma) + prevRewardBatch
+                loss = F.smooth_l1_loss(prevValues, expectedValues.unsqueeze(1))
+            elif METHOD == 'predict':
+                if len(self.memoryWin) < self.batchSize:
+                    return
+                transitions = self.memoryWin.sample(self.batchSize)
+                batch = Transition(*zip(*transitions))
+                stateBatch = torch.cat(batch.state)
+                expectedActionBatch = torch.cat(batch.action)
+                actionBatch = self.net(stateBatch)
+                loss = self.criterion(actionBatch, expectedActionBatch)
             self.optimizer.zero_grad()
             loss.backward()
             for param in self.net.parameters():
@@ -201,7 +234,10 @@ class Gomoku:
         return loss
 
     def test(self, selfplay=0, chooseBlack=1):
-        self.net = Net().to(self.device)
+        if METHOD == 'RL':
+            self.net = RLNet().to(self.device)
+        elif METHOD == 'predict':
+            self.net = predictNet().to(self.device)
         self.net.load_state_dict(torch.load('gomoku.pt'))
         self.display(ai=1, selfplay=selfplay, chooseBlack=chooseBlack)
 
@@ -260,9 +296,9 @@ class Gomoku:
 
         pygame.quit()
 
-class Net(nn.Module):
+class RLNet(nn.Module):
     def __init__(self):
-        super(Net, self).__init__()
+        super(RLNet, self).__init__()
         self.conv1 = nn.Conv2d(2, 16, 3, 1, 1)
         self.bn16 = nn.BatchNorm2d(16)
         self.conv2 = nn.Conv2d(16, 32, 3, 1, 1)
@@ -282,6 +318,34 @@ class Net(nn.Module):
         x = F.relu(self.bn64(self.conv3_2(y)))
         x = self.conv4(x)
         return x.view(-1, 15*15)
+
+class predictNet(nn.Module):
+    def __init__(self):
+        super(predictNet, self).__init__()
+        self.conv1 = nn.Conv2d(2, 16, 3, 1, 1)
+        self.bn16 = nn.BatchNorm2d(16)
+        self.conv2 = nn.Conv2d(16, 32, 3, 1, 1)
+        self.conv2_2 = nn.Conv2d(32, 32, 3, 1, 1)
+        self.conv3 = nn.Conv2d(32, 64, 3, 1, 1)
+        self.conv3_2 = nn.Conv2d(64, 64, 3, 1, 1)
+        self.bn32 = nn.BatchNorm2d(32)
+        self.bn64 = nn.BatchNorm2d(64)
+        self.conv4 = nn.Conv2d(64, 2, 1, 1)
+        self.bn2 = nn.BatchNorm2d(2)
+        self.fc1 = nn.Linear(15*15*2, 15*15)
+        self.sm = nn.Softmax(1)
+
+    def forward(self, x):
+        x = F.relu(self.bn16(self.conv1(x)))
+        x = F.relu(self.bn32(self.conv2(x)))
+        y = F.relu(self.bn32(self.conv2_2(x)))
+        x = F.relu(self.bn32(self.conv2_2(y)) + x)
+        x = F.relu(self.bn64(self.conv3(x)))
+        y = F.relu(self.bn64(self.conv3_2(x)))
+        x = F.relu(self.bn64(self.conv3_2(y)) + x)
+        policy = F.relu(self.bn2(self.conv4(x))).view(-1, 15*15*2)
+        policy = self.sm(self.fc1(policy))
+        return policy
 
 class replayMemory(object):
 
